@@ -1,0 +1,228 @@
+#!/bin/bash
+#	vim: set sw=4 ts=4 ci :
+if /usr/bin/test -f /usr/etc/NSCONFIG
+then
+	user=$(/bin/sed 's:/.\+$::g' /usr/etc/NSCONFIG)
+	password=$(/bin/sed 's:@[^@]\+$::g; s:^[^/]\+/::g' /usr/etc/NSCONFIG)
+else
+	#	Here you can set password and user for DB.
+	#	Or you can use /usr/etc/NSCONFIG file which has precedence.
+	#	Or you can supply it on every run (when password is password='__CHANGE_ME___').
+	#	Default password='__CHANGE_ME___'
+	user='__CHANGE_ME___'
+	password='__CHANGE_ME___'
+fi
+test='/usr/bin/test'
+echo='/bin/echo'
+server="$1"
+fs="$2"
+hlp () {
+	$echo 'Usage:'
+	$echo ''
+	$echo '	Script used for cleaning dpm FS from dark data on FS as also in DB.'
+	$echo '	It sets chosen fs as read-only, dupms files from DB and then compares dump with real data.'
+	$echo '	Deleting files not found in dpm DB from disk and deleting from DB data not found on disk.'
+	$echo ''
+	$echo 'Usage '
+	$echo "	$0 <server.fqdn> <fs>"
+	$echo ''
+	$echo 'For help'
+	$echo "	$0 -h"
+	$echo "	$0 --help"
+	$echo ''
+	$echo 'Example:'
+	$echo "	$0 dpm1.example.tld /mnt/dpmfs1"
+	$echo ''
+	$echo 'Password and user for database:'
+	$echo '	Password and username can be set in three ways (in order of precedence)'
+	$echo '	1.	/usr/etc/NSCONFIG file (DPM deafult)'
+	$echo '	2.	Change it in this script'
+	$echo '	3.	Supply it on every run of script when password and/or user in script is set to default value "__CHANGE_ME___"'
+	$echo ''
+	$echo ''
+}
+
+if $test "$server" = "-h" || $test "$server" = "--help"
+then
+	hlp
+	exit 0
+fi
+
+if $test -z "$fs" || $test -z "$server"
+then
+	$echo ""
+	$echo "Filesystem and/or Server can not be empty!!!"
+	hlp
+	exit 1
+fi
+
+tstserv="$(/usr/bin/dpm-qryconf|/bin/grep " ${server} ")"
+if $test -z "$tstserv"
+then
+	$echo ""
+	$echo "Invalid Server ${server}!!!"
+	hlp
+	exit 1
+fi
+
+tstfs="$(/usr/bin/dpm-qryconf|/bin/grep " ${server} "|/bin/grep " ${fs} ")"
+if $test -z "$tstfs"
+then
+	$echo ""
+	$echo "Invalid Filesystem ${fs}!!!"
+	hlp
+	exit 1
+fi
+
+tstfs_disabled="$(/usr/bin/dpm-qryconf|/bin/grep " ${server} "|/bin/grep " ${fs} "|/bin/grep 'DISABLED')"
+if $test ! -z "$tstfs_disabled"
+then
+	$echo ''
+	$echo "Filesystem ${fs} is disabled, we would not touch it!!!"
+	$echo 'You should enable this filesystem before runing this script.'
+	$echo 'If you think that this is wise you can do it this way:'
+	$echo 'To make it read/write run:'
+	$echo "	/usr/bin/dpm-modifyfs --server ${server} --fs ${fs} --st 0"
+	$echo 'or to make it read-only run:'
+	$echo "	/usr/bin/dpm-modifyfs --server ${server} --fs ${fs} --st RDONLY"
+	exit 1
+fi
+
+
+
+outdir="$(/bin/mktemp -d -p /dev/shm dpm_cleaner_tmp.XXXXXXXXXXXXXX)"
+filelist="${outdir}/filelist"
+now="$(/bin/date --rfc-3339=sec)"
+log="/var/log/dpm-cleaner/dpm-cleaner.$(/bin/date +%Y%m%d%H%M%S).log"
+ssh='/usr/bin/ssh -n'
+server_temp="$($ssh $server "/bin/mktemp -d -p /dev/shm dpm_cleaner_tmp.XXXXXXXXXXXXXX")"
+rem_filelist="${server_temp}/filelist"
+disk_checker="${outdir}/disk_checker.sh"
+rem_disk_checker="${server_temp}/disk_checker.sh"
+db_checker="${outdir}/db_checker.sh"
+rem_db_checker="${server_temp}/db_checker.sh"
+notfound="${outdir}/notfound"
+scp='/usr/bin/scp -q'
+tee='/usr/bin/tee -a'
+ecode=0
+rdonly=0
+
+$ssh $server "/bin/touch ${fs}/dpm-cleaner-test.file"
+if $test ! $? = 0
+then
+	$echo "Failed to write to file system ${fs}!!!"
+	$echo "Check mountpoint state."
+	exit 1
+fi
+$ssh $server "/bin/rm ${fs}/dpm-cleaner-test.file"
+
+tstfs_rdonly="$(/usr/bin/dpm-qryconf|/bin/grep " ${server} "|/bin/grep " ${fs} "|/bin/grep 'RDONLY')"
+if $test ! -z "$tstfs_rdonly"
+then
+	$echo "Filesystem ${fs} is read only, script will honour that setting and keep it at the end of run."|$tee $log
+	rdonly=1
+fi
+
+$echo '#!/bin/bash' > $disk_checker
+$echo '/bin/grep -q $1 '"${rem_filelist}" >> $disk_checker
+$echo 'if /usr/bin/test ! $?=0 ' >> $disk_checker
+$echo 'then' >> $disk_checker
+$echo '	/bin/echo deleted\ $1' >> $disk_checker
+$echo '	/bin/rm -f $1' >> $disk_checker
+$echo 'fi' >> $disk_checker
+$echo 'exit 0' >> $disk_checker
+$scp $disk_checker ${server}:${rem_disk_checker}
+$ssh $server "/bin/chmod 755 ${rem_disk_checker}"
+
+$echo '#!/bin/bash' > $db_checker
+$echo "filet=\$( /bin/echo \$1|/bin/sed 's;^.*:/;/;g')" >> $db_checker
+$echo 'if /usr/bin/test ! -e $filet' >> $db_checker
+$echo 'then' >> $db_checker
+$echo '	/bin/echo $1' >> $db_checker
+$echo 'fi' >> $db_checker
+$echo 'exit 0' >> $db_checker
+$scp $db_checker ${server}:${rem_db_checker}
+$ssh $server "/bin/chmod 755 ${rem_db_checker}"
+
+
+/bin/mkdir -p /var/log/dpm-cleaner
+$echo "Cleaning ${server}:${fs}, log is stored at ${log}"
+
+$echo "DPM cleaner log from ${now}, for ${server}:${fs}" >> $log
+$echo "$(/bin/date --rfc-3339=sec) Setting FS ${server}:${fs} as read-only" >> $log
+
+if $test $rdonly = 0
+then
+	/usr/bin/dpm-modifyfs --server $server --fs $fs --st RDONLY
+	/bin/sleep 180
+fi
+
+if $test "${user}" = "__CHANGE_ME___"
+then
+	$echo 'Default DB user "__CHANGE_ME___" detected.'
+	$echo 'You can either place it on the first line of /usr/etc/NSCONFIG, change it in script or you can supply it on every run.'
+	read -r -s -P 'Please enter DB user and hit <Enter>:' user
+fi
+
+if $test "${password}" = "__CHANGE_ME___"
+then
+	$echo 'Default DB password "__CHANGE_ME___" detected.'
+	$echo 'You can either place it on the first line of /usr/etc/NSCONFIG, change it in script or you can supply it on every run.'
+	read -r -s -P 'Please enter DB password and hit <Enter>:' password
+fi
+
+/usr/bin/mysql -BN -p"${password}" cns_db -u"${user}" -e "SELECT Cns_file_replica.sfn FROM Cns_file_replica,Cns_file_metadata WHERE (Cns_file_replica.fileid=Cns_file_metadata.fileid) AND (Cns_file_replica.sfn like '${server}:${fs}%');" > $filelist
+mysql_ecode=$?
+filelist_size=$(/bin/cat $filelist|/usr/bin/wc -l)
+fs_content=$($ssh $server "/bin/ls -1 ${fs}")
+
+if $test ! $mysql_ecode = 0
+then
+	ecode=1
+	$echo 'Connection to mysql DB failed!!!'|$tee $log
+	$echo "Used user name: ${user}"
+	$echo "Used password: ${password}"
+	$echo 'You should change password in file /usr/etc/NSCONFIG or in script if this is not the right one...'
+elif $test $filelist_size = 0
+then
+	ecode=1
+	$echo 'List of files from DB is empty.'|$tee $log
+	$echo "Should filesystem ${server}:${fs} be EMPTY?"|$tee $log
+	$echo 'If answer is yes, then you can delete any file you can find on fs,'|$tee $log
+	$echo 'because there is no record of any file in DB for this fs.'|$tee $log
+elif $test -z $fs_content
+then
+	ecode=1
+	backfile="$(/bin/mktemp -d -p /tmp dpm_cleaner_tmp.XXXXXXXXXXXXXX)/filelist"
+	/bin/cp -f "${filelist}" "${backfile}"
+	$echo "No files or directories found on file system ${fs}!"|$tee $log
+	$echo 'This seems suspicius...'
+	$echo 'You can still clean your DB by running'|$tee $log
+	$echo "while read file; do /usr/bin/dpm-delreplica \$file;done < ${backfile}"|$tee $log
+else
+	$echo "==================NOTFOUND_IN_DB==================" >> $log
+	$scp $filelist ${server}:${server_temp}
+	$ssh $server "/bin/find ${fs} -type f|/usr/bin/xargs -L1 -P64 ${rem_disk_checker}" >> $log
+
+	$echo "==================NOTFOUND_ON_FS==================" >> $log
+	$ssh $server "/usr/bin/xargs -L1 -P64 ${rem_db_checker} < ${rem_filelist}" > $notfound
+	while read file
+	do
+		/usr/bin/dpm-sql-pfn-to-dpns $file >> $log
+		/usr/bin/dpm-delreplica $file
+	done < $notfound
+fi
+
+if $test $rdonly = 0
+then
+	$echo "$(/bin/date --rfc-3339=sec) Setting FS ${server}:${fs} as read-write" >> $log
+	/usr/bin/dpm-modifyfs --server $server --fs $fs --st 0
+fi
+$ssh $server "/bin/rm -rf $server_temp"
+
+$echo "$(/bin/date --rfc-3339=sec) Cleanup" >> $log
+/bin/rm -rf $outdir
+$echo "Cleaning of ${server}:${fs} done"
+$echo "$(/bin/date --rfc-3339=sec) END" >> $log
+exit $ecode
+
