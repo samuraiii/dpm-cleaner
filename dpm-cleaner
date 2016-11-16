@@ -1,5 +1,6 @@
 #!/bin/bash
 #	vim: set sw=4 ts=4 ci :
+#	Distributed unde MIT License (See LICENCE file).
 if /usr/bin/test -f /usr/etc/NSCONFIG
 then
 	user=$(/bin/sed 's:/.\+$::g' /usr/etc/NSCONFIG)
