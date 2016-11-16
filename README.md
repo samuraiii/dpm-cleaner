@@ -37,3 +37,7 @@ Read write acces to database is needed.
 Example:
 
 	/path/to/dpm-cleaner dpm1.example.tld /mnt/dpmfs1
+	
+	
+##License
+This script is licencsed unde MIT License. (See LICENSE file)
