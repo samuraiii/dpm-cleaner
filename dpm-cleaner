@@ -191,7 +191,7 @@ then
 	$echo "Should filesystem ${server}:${fs} be EMPTY?"|$tee $log
 	$echo 'If answer is yes, then you can delete any file you can find on fs,'|$tee $log
 	$echo 'because there is no record of any file in DB for this fs.'|$tee $log
-elif $test -z $fs_content
+elif $test -z "${fs_content}"
 then
 	ecode=1
 	backfile="$(/bin/mktemp -d -p /tmp dpm_cleaner_tmp.XXXXXXXXXXXXXX)/filelist"
