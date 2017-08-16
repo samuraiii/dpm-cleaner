@@ -5,6 +5,8 @@ if /usr/bin/test -f /usr/etc/NSCONFIG
 then
 	user=$(/bin/sed 's:/.\+$::g' /usr/etc/NSCONFIG)
 	password=$(/bin/sed 's:@[^@]\+$::g; s:^[^/]\+/::g' /usr/etc/NSCONFIG)
+        mysqlhost=$(/bin/sed 's:^[^@]\+\@::g; s:/[^/]\+::g' /usr/etc/NSCONFIG)
+        mysqldb=$(/bin/sed 's:^[^@]\+\@::g; s:^[^/]\+/::g' /usr/etc/NSCONFIG)
 else
 	#	Here you can set password and user for DB.
 	#	Or you can use /usr/etc/NSCONFIG file which has precedence.
@@ -12,6 +14,8 @@ else
 	#	Default password='__CHANGE_ME___'
 	user='__CHANGE_ME___'
 	password='__CHANGE_ME___'
+        mysqlhost='127.0.0.1'
+        mysqldb='cns_db'
 fi
 test='/usr/bin/test'
 echo='/bin/echo'
@@ -172,7 +176,7 @@ then
 	read -r -s -P 'Please enter DB password and hit <Enter>:' password
 fi
 
-/usr/bin/mysql -BN -p"${password}" cns_db -u"${user}" -e "SELECT Cns_file_replica.sfn FROM Cns_file_replica,Cns_file_metadata WHERE (Cns_file_replica.fileid=Cns_file_metadata.fileid) AND (Cns_file_replica.sfn like '${server}:${fs}%');" > $filelist
+/usr/bin/mysql -BN -p"${password}" "${mysqldb}" -u "${user}" -h "${mysqlhost}" -e "SELECT Cns_file_replica.sfn FROM Cns_file_replica,Cns_file_metadata WHERE (Cns_file_replica.fileid=Cns_file_metadata.fileid) AND (Cns_file_replica.sfn like '${server}:${fs}%');" > $filelist
 mysql_ecode=$?
 filelist_size=$(/bin/cat $filelist|/usr/bin/wc -l)
 fs_content=$($ssh $server "/bin/ls -1 ${fs}")
